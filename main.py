@@ -1416,18 +1416,33 @@ async def stop_monitoring(current_user: User = Depends(auth.get_current_user), d
         db.commit()
     return {"message": "Stopped"}
 
+# ================= STATUS ENDPOINT (DUAL KEY FIX) =================
 @app.get("/status")
-async def get_status(current_user: User = Depends(auth.get_current_user)):
+def get_monitoring_status(current_user: User = Depends(auth.get_current_user)):
+    """
+    Exposes the current live state.
+    Returns data under multiple keys to satisfy both the 
+    'Monitoring View' (needs 'status_messages') and the 
+    'Alert Dashboard' (needs 'current_statuses').
+    """
+    # Calculate current latencies from the latest history entry
+    current_latencies = {}
+    for target, history in state.histories.items():
+        if len(history) > 0:
+            current_latencies[target] = history[-1]
+        else:
+            current_latencies[target] = 0.0
+
     return {
         "is_monitoring": state.is_monitoring,
-        "target_url": state.target_url,
         "targets": state.targets,
-        "current_latencies": {t: state.histories.get(t, [0])[-1] if t in state.histories else 0 for t in state.targets},
-        "baseline_avgs": state.baseline_avgs,
-        "status_messages": state.current_statuses,
+        "status_messages": state.current_statuses,  # <-- Required by Monitoring View
+        "current_statuses": state.current_statuses, # <-- Required by Active Threats Tab
+        "current_latencies": current_latencies,
         "histories": state.histories,
         "timestamps": state.timestamps
     }
+
 # ================= DOMAIN TRACKING LOGIC =================
 # --- RDAP / WHOIS HYBRID HELPER ---
 def _get_rdap_info_ultra(domain_name):

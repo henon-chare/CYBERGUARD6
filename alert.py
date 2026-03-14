@@ -49,7 +49,7 @@ def get_root_domain(u):
 def check_service_alerts(target_url, current_status, current_latency):
     """
     Evaluates the current monitoring state against user-defined AlertRules.
-    Uses suffix matching to correctly identify parent monitors for deep subdomains.
+    Includes Fuzzy Matching for subdomains with typos or Certificate Intermediate strings.
     """
     db = SessionLocal()
     try:
@@ -92,7 +92,7 @@ def check_service_alerts(target_url, current_status, current_latency):
                     user_id_to_check = domain_entry.user_id
                     break
 
-        # 4. NEW: RULE TABLE FALLBACK
+        # 4. RULE TABLE FALLBACK (If no Monitor/Domain entry exists)
         if not user_id_to_check:
             norm_url = target_url.replace("https://", "").replace("http://", "").split("/")[0].strip().lower()
             matching_rule_for_user = db.query(AlertRule).filter(
@@ -115,21 +115,14 @@ def check_service_alerts(target_url, current_status, current_latency):
             AlertRule.is_active == True
         ).all()
 
-        # --- FIXED HELPER: Get Root Domain ---
-        # Added logic to handle username/host format (e.g., user@example.com) to match the rule
+        # --- HELPER: Get Root Domain ---
         def get_root_domain(u):
             try:
                 d = u.replace("https://", "").replace("http://", "").split("/")[0]
-                
-                # FIX: Handle username/host format (e.g., user@example.com)
-                # This ensures "user@example.com" and "example.com" are seen as the same root
-                if '@' in d:
-                    d = d.split('@')[-1]
-                
+                if '@' in d: d = d.split('@')[-1]
                 p = d.split(".")
                 return ".".join(p[-2:]) if len(p) > 2 else d
-            except: 
-                return u
+            except: return u
 
         current_root_domain = get_root_domain(target_url)
 
@@ -146,10 +139,17 @@ def check_service_alerts(target_url, current_status, current_latency):
                 clean_rule_url = rule.target_url.replace("https://", "").replace("http://", "").strip().lower().rstrip("/")
                 clean_current_url = target_url.replace("https://", "").replace("http://", "").strip().lower().rstrip("/")
                 
-                # Check if current URL ends with the rule URL (supports subdomains)
+                # Check if current URL ends with the rule URL (Standard Subdomain)
                 if clean_current_url.endswith("." + clean_rule_url) or clean_current_url == clean_rule_url:
                     rule_applies = True
-                # Fallback: Root domain check (Uses the fixed helper above)
+                
+                # --- NEW: FUZZY MATCH (CONTAINS) ---
+                # Handles "m.testexample.com" matching "example.com" 
+                # and "AS207960 Test Intermediate - example.com" matching "example.com"
+                elif clean_rule_url in clean_current_url and len(clean_rule_url) > 3:
+                    rule_applies = True
+
+                # Fallback: Root domain check
                 elif get_root_domain(clean_current_url) == get_root_domain(clean_rule_url):
                     rule_applies = True
             

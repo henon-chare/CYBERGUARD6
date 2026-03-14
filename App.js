@@ -360,6 +360,7 @@ const Sparkline = ({ history, width = 200, height = 40, isDegraded }) => {
     </div>);
 };
 // ================= ADVANCED PROFESSIONAL ALERT DASHBOARD COMPONENT =================
+// ================= ADVANCED PROFESSIONAL ALERT DASHBOARD COMPONENT =================
 const AlertDashboardComponent = ({ onBack, token }) => {
     const [view, setView] = useState('rule-config');
     const [loading, setLoading] = useState(true);
@@ -394,41 +395,26 @@ const AlertDashboardComponent = ({ onBack, token }) => {
     // State for Delete Rule Confirmation Modal
     const [deleteRuleModal, setDeleteRuleModal] = useState({ isOpen: false, id: null });
 
-    // Ref to store IDs of cleared logs to prevent them from reappearing
+    // Ref to store IDs of cleared logs
     const ignoredHistoryIdsRef = useRef(new Set());
 
-    // ================= DEBOUNCE LOGIC: UPDATED FOR STRICTER REMOVAL =================
-    // Stores consecutive failure counts for each target to prevent alerts from vanishing on single good pings
+    // ================= DEBOUNCE LOGIC =================
     const threatCounterRef = useRef({}); 
-    const CONSECUTIVE_FAILURES_THRESHOLD = 2; // Needs 2 bad pings to show (reduced from 3)
-    const CONSECUTIVE_SUCCESS_THRESHOLD = 1;  // Needs 1 good ping to hide (reduced from 3 - per your request)
+    const CONSECUTIVE_FAILURES_THRESHOLD = 2; 
 
     // ================= LIVE LOGIC: ONLY FOR "ACTIVE THREATS" =================
+        // ================= LIVE LOGIC: ONLY FOR "ACTIVE THREATS" =================
     const getLiveViolations = () => {
         const violations = [];
-        
-        // Iterate over the master targets list
         const targetsToCheck = monitors.targets || [];
 
         // --- HELPER: Robust Domain Cleaning ---
         const getCleanDomain = (url) => {
             if (!url) return "";
-            // Remove protocol, user:pass, and path
-            return url.replace(/.*:\/\//, '').split('/')[0].split('@').pop().toLowerCase();
+            return url.replace(/.*:\/\//, '').split('/')[0].split('@').pop().trim().toLowerCase();
         };
 
-        // --- HELPER: Get Root Domain (for deep subdomain fallback) ---
-        const getRootDomain = (u) => {
-            try {
-                let d = u.replace("https://", "").replace("http://", "").split("/")[0];
-                if (d.includes('@')) d = d.split('@').pop();
-                const p = d.split(".");
-                // Return the last two parts (e.g., example.com) if there are more than 2, otherwise return the whole string
-                return p.length > 2 ? p.slice(-2).join(".") : d;
-            } catch (e) { return u; }
-        };
-
-        // --- HELPER: ROBUST RULE MATCHING (Updated) ---
+        // --- HELPER: ROBUST RULE MATCHING ---
         const ruleAppliesToTarget = (rule, target) => {
             const cleanRule = getCleanDomain(rule.target_url);
             const cleanTarget = getCleanDomain(target);
@@ -438,18 +424,14 @@ const AlertDashboardComponent = ({ onBack, token }) => {
             // 1. Exact Match
             if (cleanRule === cleanTarget) return true;
             
-            // 2. Subdomain Match (e.g., sub.example.com matches example.com)
-            // This handles the user request: Main Domain Rule -> All Subdomains
+            // 2. Subdomain Match (sub.example.com matches example.com)
             if (cleanTarget.endsWith("." + cleanRule)) return true;
             
-            // 3. Reverse Subdomain Match (Edge case: Rule is sub, Target is main)
+            // 3. Reverse Subdomain Match
             if (cleanRule.endsWith("." + cleanTarget)) return true;
             
-            // 4. Contains fallback (strict)
+            // 4. Contains Fallback (Handles "m.testexample.com" matching "testexample.com")
             if (cleanTarget.includes(cleanRule) && cleanRule.length > 3) return true;
-
-            // 5. Root Domain Fallback (Handles deep subdomains like deep.sub.example.com)
-            if (getRootDomain(cleanRule) === getRootDomain(cleanTarget)) return true;
 
             return false;
         };
@@ -464,7 +446,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
             let threatMessage = '';
             let matchingRuleId = "SYSTEM";
 
-            // Find all rules that apply to this specific target (including main domain rules matching subdomains)
+            // --- 1. CHECK USER DEFINED RULES ---
             const matchedRules = rules.filter(r => 
                 r.type === 'service' && r.is_active && ruleAppliesToTarget(r, target)
             );
@@ -473,14 +455,13 @@ const AlertDashboardComponent = ({ onBack, token }) => {
                 for (const rule of matchedRules) {
                     const condition = rule.condition; 
                     
-                    // Check: STATUS DOWN
+                    // Check: STATUS DOWN (Expanded Keywords)
                     if (condition === 'status_down' || condition === 'http_error') {
-                        if (currentStatus.includes("DOWN") || 
-                            currentStatus.includes("ERROR") || 
-                            currentStatus.includes("TIMEOUT") || 
-                            currentStatus.includes("REFUSED") || 
-                            currentStatus.includes("NOT FOUND")) {
-                            
+                        // Check for a wider range of "Down" keywords
+                        const downKeywords = ["DOWN", "ERROR", "TIMEOUT", "REFUSED", "NOT FOUND", "CRITICAL", "CONNECTION REFUSED"];
+                        const isDown = downKeywords.some(kw => currentStatus.toUpperCase().includes(kw));
+
+                        if (isDown) {
                             isThreat = true;
                             threatSeverity = rule.severity || 'critical';
                             threatMessage = `[${threatSeverity.toUpperCase()}] ${target} is unreachable. Status: ${currentStatus}`;
@@ -517,22 +498,42 @@ const AlertDashboardComponent = ({ onBack, token }) => {
                         }
                     }
                 }
+            } 
+            
+            // --- 2. FALLBACK: SYSTEM DEFAULT RULES (FIX) ---
+            // If no user rules matched, we check for standard critical system states.
+            // This ensures "Active Threats" works even without user configuration.
+            else {
+                const downKeywords = ["DOWN", "ERROR", "TIMEOUT", "REFUSED", "NOT FOUND", "CRITICAL", "CONNECTION REFUSED"];
+                const warningKeywords = ["WARNING", "SLOW", "UNSTABLE"];
+
+                const isDown = downKeywords.some(kw => currentStatus.toUpperCase().includes(kw));
+                const isWarning = warningKeywords.some(kw => currentStatus.toUpperCase().includes(kw));
+
+                if (isDown) {
+                    isThreat = true;
+                    threatSeverity = 'critical';
+                    threatMessage = `[SYSTEM CRITICAL] ${target} is unreachable. Status: ${currentStatus}`;
+                    matchingRuleId = "SYSTEM-AUTO";
+                } else if (isWarning) {
+                    isThreat = true;
+                    threatSeverity = 'warning';
+                    threatMessage = `[SYSTEM WARNING] ${target} is experiencing issues. Status: ${currentStatus}`;
+                    matchingRuleId = "SYSTEM-AUTO";
+                }
             }
 
             // --- DEBOUNCE LOGIC: Update Counters ---
             if (isThreat) {
-                // If it's a threat, increment counter
                 threatCounterRef.current[target] = (threatCounterRef.current[target] || 0) + 1;
             } else {
-                // If it's not a threat, decrement counter
                 threatCounterRef.current[target] = Math.max(0, (threatCounterRef.current[target] || 0) - 1);
             }
 
-            // Only show as Active Threat if failures exceed threshold
+            // Only show as Active Threat if failures exceed threshold (2 consecutive checks)
             const count = threatCounterRef.current[target] || 0;
             
-            if (count >= CONSECUTIVE_FAILURES_THRESHOLD) {
-                // Check if already in list to avoid duplicates (though set logic handles this mostly)
+            if (count >= 2) {
                 if (!violations.find(item => item.id === target)) {
                     violations.push({
                         id: target,
@@ -550,7 +551,13 @@ const AlertDashboardComponent = ({ onBack, token }) => {
         return violations;
     };
 
-    // Fetch all initial data & Polling
+      
+            
+           
+
+       
+
+    // Fetch Data
     useEffect(() => {
         fetchData();
         const interval = setInterval(fetchData, 5000);
@@ -1046,22 +1053,20 @@ const AlertDashboardComponent = ({ onBack, token }) => {
         );
     };
 
-    // --- View 3: Active Threats (With Debouncing) ---
+        // --- View 3: Active Threats (Live Only) ---
     const renderActiveAlertsView = () => {
-        // Get violations (Logic now includes counter check)
+        // Get violations from Live Monitoring (For explicitly tracked targets)
+        // This logic checks the CURRENT status against CURRENT rules.
         const activeItems = getLiveViolations();
         
-        // Include recent domain alerts (Last 24h) as they are "Active Events"
-        const now = new Date();
-        const recentDomainAlerts = history.filter(h => {
-            if (h.source_type !== 'domain') return false;
-            if (!h.time) return false;
-            const alertTime = new Date(h.time);
-            const hoursSinceAlert = (now - alertTime) / 36e5; 
-            return hoursSinceAlert < 24; 
-        }).map(h => ({ ...h, source: 'domain' }));
-
-        const allActiveThreats = [...activeItems, ...recentDomainAlerts];
+        // STRICTLY LIVE LIST
+        // We DO NOT merge with database history ('recentAlerts') here.
+        // The "Audit Log" tab handles history.
+        // This tab is strictly for threats that are happening RIGHT NOW.
+        // If a site is UP, it will not appear here, even if it was down 5 minutes ago.
+        const allActiveThreats = activeItems;
+        
+        // Sort by time (Newest first)
         allActiveThreats.sort((a, b) => new Date(b.time) - new Date(a.time));
 
         return (
@@ -1069,7 +1074,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
                 <header className="alert-header-pro">
                     <div>
                         <h3>Active Threats</h3>
-                        <p className="subtext">Real-time status (Debounced)</p>
+                        <p className="subtext">Real-time status of currently failing services.</p>
                     </div>
                 </header>
 
@@ -1077,12 +1082,12 @@ const AlertDashboardComponent = ({ onBack, token }) => {
                     <div className="empty-state-pro secure">
                         <div className="secure-icon">🛡️</div>
                         <h4>SYSTEM SECURE</h4>
-                        <p>No active violations detected.</p>
+                        <p>No active violations detected across all monitored targets.</p>
                     </div>
                 ) : (
                     <div className="threat-feed">
                         {allActiveThreats.map(h => (
-                            <div key={h.id} className="threat-card">
+                            <div key={h.id || h.source + h.message} className="threat-card">
                                 <div className={`threat-indicator ${getSeverityClass(h.severity)}`}></div>
                                 <div className="threat-content">
                                     <div className="threat-meta">
@@ -1094,7 +1099,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
                                     <div className="threat-message">{h.message}</div>
                                     <div className="threat-details">
                                         <span>Rule ID: #{h.rule_id}</span>
-                                        <span>Channel: {h.channel}</span>
+                                        <span>Source: Live Monitor</span>
                                     </div>
                                 </div>
                             </div>
@@ -1104,6 +1109,8 @@ const AlertDashboardComponent = ({ onBack, token }) => {
             </main>
         );
     };
+
+
 
     // --- View 4: History (Strictly Database) ---
     const renderHistoryView = () => {
@@ -1212,6 +1219,8 @@ const AlertDashboardComponent = ({ onBack, token }) => {
         </div>
     );
 };
+    
+
 // ================= UPGRADED DOMAIN TRACKING COMPONENT =================
 
 const ExpiryCountdown = ({ label, dateStr }) => {
