@@ -611,7 +611,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
 
             if (res.ok) {
                 setRules(prev => prev.filter(r => r.id !== id));
-                if(window.showToast) window.showToast("Protocol Deleted", "success");
+                if(window.showToast) window.showToast("Rule Deleted", "success");
             } else {
                 const errData = await res.json().catch(() => ({}));
                 throw new Error(errData.detail || "Failed to delete rule");
@@ -691,7 +691,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
             if (res.ok) {
                 const newRule = await res.json();
                 setRules(prev => [...prev, newRule]);
-                if(window.showToast) window.showToast("Alert Protocol Deployed", "success");
+                if(window.showToast) window.showToast("Alert Rule Deployed", "success");
                 setView('rule-config'); 
                 resetForm();
             } else {
@@ -761,7 +761,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
             <nav className="alert-nav-pro">
                 <div className={`alert-nav-item ${view === 'rule-config' ? 'active' : ''}`} onClick={() => { setView('rule-config'); }}>
                     <span className="nav-icon">⚙️</span>
-                    <span className="nav-text">Protocols</span>
+                    <span className="nav-text">Rules</span>
                 </div>
                 <div className={`alert-nav-item ${view === 'active-alerts' ? 'active' : ''}`} onClick={() => { setView('active-alerts'); }}>
                     <span className="nav-icon">🚨</span>
@@ -813,14 +813,14 @@ const AlertDashboardComponent = ({ onBack, token }) => {
             <main className="alert-main-pro">
                 <header className="alert-header-pro">
                     <div>
-                        <h3>Alert Protocols</h3>
+                        <h3>Alert Rules</h3>
                         <p className="subtext">Manage automated response triggers</p>
                     </div>
                 </header>
 
                 <div className="alert-config-layout">
                     <div className="config-creation-zone">
-                        <h4>Create New Protocol</h4>
+                        <h4>Create New Rule</h4>
                         <div className="protocol-cards-grid">
                             <div className="protocol-card-pro" onClick={() => handleOpenCreateRule('service')}>
                                 <div className="card-glow blue"></div>
@@ -854,11 +854,11 @@ const AlertDashboardComponent = ({ onBack, token }) => {
 
                     <div className="config-list-zone">
                         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px'}}>
-                            <h4>Active Protocols ({rules.length})</h4>
+                            <h4>Active Rules ({rules.length})</h4>
                         </div>
                         
                         {rules.length === 0 ? (
-                            <div className="empty-state-pro">No active protocols found.</div>
+                            <div className="empty-state-pro">No active Rules found.</div>
                         ) : (
                             <div className="rules-grid-pro">
                                 {rules.map(rule => (
@@ -928,7 +928,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
             <div className="creation-form-wrapper">
                 <form onSubmit={handleSubmitRule}>
                     <div className="form-group">
-                        <label>Protocol Name</label>
+                        <label>Rule Name</label>
                         <input 
                             required 
                             className="input-pro" 
@@ -1044,7 +1044,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
                             className="btn-deploy-alert" 
                             style={{ flex: 30, height: '48px' }}
                         >
-                            Deploy Protocol
+                            Deploy Rule
                         </button>
                     </div>
                 </form>
@@ -1199,7 +1199,7 @@ const AlertDashboardComponent = ({ onBack, token }) => {
         );
     };
     
-    if (loading) return <div className="loading-overlay">INITIALIZING SECURITY PROTOCOLS...</div>;
+    if (loading) return <div className="loading-overlay">INITIALIZING SECURITY RULES...</div>;
 
     return (
         <div className="alert-dashboard-pro-layout">
@@ -1213,8 +1213,8 @@ const AlertDashboardComponent = ({ onBack, token }) => {
                 isOpen={deleteRuleModal.isOpen}
                 onClose={() => setDeleteRuleModal({ isOpen: false, id: null })}
                 onConfirm={handleConfirmDeleteRule}
-                title="Delete Alert Protocol"
-                message="Are you sure you want to permanently remove this Alert Rule Protocol? This action cannot be undone."
+                title="Delete Alert Rule"
+                message="Are you sure you want to permanently remove this Alert Rule ? This action cannot be undone."
             />
         </div>
     );
@@ -2333,10 +2333,23 @@ const DomainTrackingComponent = ({ onBack, token, username }) => {
 
 // ================= MONITORING COMPONENT =================
 const MonitoringComponent = ({ onBack, token, username }) => {
-  const [url, setUrl] = useState("");
+  // LocalStorage Keys
+  const STORAGE_KEY_DATA = 'cyberguard_monitor_data';
+  const STORAGE_KEY_URL = 'cyberguard_monitor_url';
+  const STORAGE_KEY_STATE = 'cyberguard_monitor_state';
+
+  // Initialize state from localStorage if available
+  const [url, setUrl] = useState(() => {
+    return localStorage.getItem(STORAGE_KEY_URL) || "";
+  });
+  
   const [lastStartedUrl, setLastStartedUrl] = useState("");
   
-  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [isMonitoring, setIsMonitoring] = useState(() => {
+    const stored = localStorage.getItem(STORAGE_KEY_STATE);
+    return stored ? JSON.parse(stored) : false;
+  });
+
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("monitoring");
   const [searchTerm, setSearchTerm] = useState("");
@@ -2350,14 +2363,36 @@ const MonitoringComponent = ({ onBack, token, username }) => {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [newlyAddedUrl, setNewlyAddedUrl] = useState("");
 
-  const [data, setData] = useState({
-    targets: [],
-    current_latencies: {},
-    baseline_avgs: {},
-    status_messages: {},
-    histories: {},
-    timestamps: {},
+  // Load data from localStorage on mount
+  const [data, setData] = useState(() => {
+    try {
+      const storedData = localStorage.getItem(STORAGE_KEY_DATA);
+      return storedData ? JSON.parse(storedData) : {
+        targets: [],
+        current_latencies: {},
+        baseline_avgs: {},
+        status_messages: {},
+        histories: {},
+        timestamps: {},
+      };
+    } catch (e) {
+      return {
+        targets: [],
+        current_latencies: {},
+        baseline_avgs: {},
+        status_messages: {},
+        histories: {},
+        timestamps: {},
+      };
+    }
   });
+
+  // Persist data to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_DATA, JSON.stringify(data));
+    localStorage.setItem(STORAGE_KEY_URL, url);
+    localStorage.setItem(STORAGE_KEY_STATE, JSON.stringify(isMonitoring));
+  }, [data, url, isMonitoring]);
 
   const isTargetDown = (status, latency) => {
     if (!status) return false;
@@ -2378,13 +2413,17 @@ const MonitoringComponent = ({ onBack, token, username }) => {
                   headers: { 'Authorization': `Bearer ${token}` }
               });
               if (response.ok) {
-                  const data = await response.json();
-                  setIsMonitoring(data.is_monitoring);
-                  setData(data); 
-                  if (data.is_monitoring) {
-                      const activeUrl = data.target_url || (data.targets.length > 0 ? data.targets[0] : "");
-                      setUrl(activeUrl);
-                      setLastStartedUrl(activeUrl);
+                  const backendData = await response.json();
+                  
+                  // Only overwrite local state if backend has active targets or we are actively monitoring
+                  if (backendData.is_monitoring || (backendData.targets && backendData.targets.length > 0)) {
+                      setIsMonitoring(backendData.is_monitoring);
+                      setData(backendData); 
+                      if (backendData.is_monitoring) {
+                          const activeUrl = backendData.target_url || (backendData.targets.length > 0 ? backendData.targets[0] : "");
+                          setUrl(activeUrl);
+                          setLastStartedUrl(activeUrl);
+                      }
                   }
               }
           } catch (error) {
@@ -2519,7 +2558,12 @@ const MonitoringComponent = ({ onBack, token, username }) => {
     }
   };
 
-  const handleClear = () => {
+  // --- MODIFIED: Clear Logic to remove localStorage ---
+  const handleClear = async () => {
+    // 1. Call the backend to stop the monitoring loop
+    await handleStop(); 
+
+    // 2. Clear the local state
     setData({
       targets: [],
       current_latencies: {},
@@ -2531,6 +2575,11 @@ const MonitoringComponent = ({ onBack, token, username }) => {
     setIsMonitoring(false);
     setSelectedMonitor(null);
     setLastStartedUrl(""); 
+    
+    // 3. Clear Persistence
+    localStorage.removeItem(STORAGE_KEY_DATA);
+    localStorage.removeItem(STORAGE_KEY_URL);
+    localStorage.removeItem(STORAGE_KEY_STATE);
   };
 
   const getFilteredTargets = () => {
@@ -3133,7 +3182,7 @@ const LandingPage = ({ onLogin, onRegister }) => {
         </h1>
         <p className="hero-subtitle">
           Unify automated domain intelligence with manual asset governance. Secure your infrastructure with  
-              real-time anomaly detection and comprehensive risk reporting.
+          real-time anomaly detection and comprehensive risk reporting.
         </p>
         <div className="cta-group">
             <button 
@@ -3176,21 +3225,21 @@ const LandingPage = ({ onLogin, onRegister }) => {
             <div className="card-icon">📡</div>
             <h3>Auto-Tracking</h3>
             <p>
-              Instant updates on domain status, DNS propagation, and WHOIS changes via RDAP.
+              Automatically tracks your domain's status, DNS records, and registration information.
             </p>
           </div>
           <div className="feature-card">
             <div className="card-icon">📝</div>
             <h3>Manual Asset Mgmt</h3>
             <p>
-              Define ownership, purpose, and infrastructure details for domains that lack public data.
+              Allows you to manually enter ownership details and infrastructure information.
             </p>
           </div>
           <div className="feature-card">
             <div className="card-icon">📊</div>
             <h3>Risk Intelligence</h3>
             <p>
-              Visual risk scoring based on expiration, compliance checklists, and renewal workflows.
+              Calculates a risk score based on expiration dates and security checklist status.
             </p>
           </div>
           
@@ -3198,21 +3247,21 @@ const LandingPage = ({ onLogin, onRegister }) => {
             <div className="card-icon">⚡</div>
             <h3>Real-Time Monitoring</h3>
             <p>
-              Live HTTP/S uptime tracking with adaptive anomaly detection to catch performance bottlenecks.
+              Continuously checks if your website is online and measures its response speed.
             </p>
           </div>
           <div className="feature-card">
             <div className="card-icon">🔒</div>
             <h3>Secure Reports</h3>
             <p>
-              Generate password-protected PDF audit trails and executive summaries for compliance.
+              Generates password-protected PDF reports for your records and compliance needs.
             </p>
           </div>
           <div className="feature-card">
             <div className="card-icon">🚨</div>
             <h3>Incident Response</h3>
             <p>
-              Detailed incident logging with root cause analysis and automated alerting workflows.
+              Logs downtime incidents and sends alerts when services go down.
             </p>
           </div>
         </div>
@@ -3303,18 +3352,24 @@ const ToastContainer = () => {
     password: "",
     token: "",
   });
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
+ // ... existing code ...
   const [message, setMessage] = useState("");
   const [userLoggedIn, setUserLoggedIn] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState(""); 
+
   const [authToken, setAuthToken] = useState(null); 
   const [selectedCard, setSelectedCard] = useState(null);
-  
-  // NEW STATE FOR FORGOT PASSWORD BUTTON DISABLE LOGIC
   const [isSubmitting, setIsSubmitting] = useState(false);
-
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  
+  // --- EXISTING STATE ---
+  const [showPassword, setShowPassword] = useState(false);
+  
+  // --- NEW STATE: Independent visibility for Confirm Password ---
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
   const profileRef = useRef(null);
+// ... existing code ...
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -3421,6 +3476,21 @@ const ToastContainer = () => {
     }
   };
 
+  // --- NEW LOGOUT HANDLER ---
+  const handleLogout = () => {
+     setUserLoggedIn(false); 
+     setShowLanding(true);
+     setAuthToken(null);
+     localStorage.removeItem('auth_token');
+     
+     // Clear Monitoring Data on Logout
+     localStorage.removeItem('cyberguard_monitor_data');
+     localStorage.removeItem('cyberguard_monitor_url');
+     localStorage.removeItem('cyberguard_monitor_state');
+     
+     setIsProfileOpen(false);
+  };
+
   const HomePage = () => {
     if (selectedCard === "monitoring") {
       return <MonitoringComponent onBack={() => setSelectedCard(null)} token={authToken} username={formData.username} />;
@@ -3474,13 +3544,8 @@ const ToastContainer = () => {
                         </div>
                     </div>
                     <div className="profile-divider"></div>
-                    <button className="profile-logout-btn" onClick={() => { 
-                        setUserLoggedIn(false); 
-                        setShowLanding(true);
-                        setAuthToken(null);
-                        localStorage.removeItem('auth_token');
-                        setIsProfileOpen(false);
-                    }}>
+                    {/* UPDATED: Use handleLogout */}
+                    <button className="profile-logout-btn" onClick={handleLogout}>
                         Logout
                     </button>
                 </div>
@@ -3560,6 +3625,7 @@ const ToastContainer = () => {
               autoComplete="off" 
             />
           )}
+                    {/* ... Password Field (Leave this one as is) ... */}
           {(page === "login" || page === "register" || page === "reset") && (
             <div className="password-wrapper">
               <input 
@@ -3574,10 +3640,13 @@ const ToastContainer = () => {
               <span className="eye-icon" onClick={() => setShowPassword(!showPassword)} role="button" tabIndex="0">{showPassword ? "🔐" : "🔓"}</span>
             </div>
           )}
+
+          {/* ... Confirm Password Field (Updated below) ... */}
           {(page === "register" || page === "reset") && (
             <div className="password-wrapper">
               <input 
-                type={showPassword ? "text" : "password"} 
+                // CHANGED: Use showConfirmPassword here
+                type={showConfirmPassword ? "text" : "password"} 
                 name="confirmPassword" 
                 placeholder="Confirm Password" 
                 value={confirmPassword} 
@@ -3585,7 +3654,10 @@ const ToastContainer = () => {
                 required 
                 autoComplete="new-password" 
               />
-              <span className="eye-icon" onClick={() => setShowPassword(!showPassword)} role="button" tabIndex="0">{showPassword ? "🔐" : "🔓"}</span>
+              {/* CHANGED: Toggle showConfirmPassword here */}
+              <span className="eye-icon" onClick={() => setShowConfirmPassword(!showConfirmPassword)} role="button" tabIndex="0">
+                {showConfirmPassword ? "🔐" : "🔓"}
+              </span>
             </div>
           )}
           {page === "reset" && (

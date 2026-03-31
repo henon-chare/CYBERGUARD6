@@ -192,8 +192,6 @@ class SmartDetector:
             self.consecutive_anomalies = 0
             return "UP", False
 
-# --- 2. ENHANCED ISOLATION FOREST DETECTOR ---
-# (Kept for compatibility, though not used in the requested loop)
 class MultiFeatureIsolationForest:
     def __init__(self, contamination=0.05):
         self.model = IsolationForest(contamination=contamination, random_state=42, n_estimators=100)
@@ -204,7 +202,6 @@ class MultiFeatureIsolationForest:
         self.consecutive_anomalies = 0
         self.required_consecutive = 3 
         
-    # --- PERSISTENCE METHODS ---
     def to_state_dict(self):
         return {
             "is_trained": self.is_trained,
@@ -222,18 +219,25 @@ class MultiFeatureIsolationForest:
     def load_state_dict(self, data):
         self.consecutive_anomalies = data.get("consecutive_anomalies", 0)
         self.required_consecutive = data.get("required_consecutive", 3)
-    # -----------------------------
 
-    def update(self, features: list):
+    def update(self, features: list, allow_learning=True): # <--- MODIFIED SIGNATURE
         self.data.append(features)
         if len(self.data) > self.max_window: self.data.pop(0)
         if len(self.data) < self.training_size: return "TRAINING", False
 
-        if not self.is_trained or len(self.data) % 50 == 0:
-            try:
-                self.model.fit(self.data)
-                self.is_trained = True
-            except: return "ERROR", False
+        # --- GUARDED TRAINING LOGIC ---
+        # Only retrain periodically AND if system is stable
+        should_train = (not self.is_trained) or (len(self.data) % 50 == 0)
+        
+        if should_train:
+            if allow_learning:
+                try:
+                    self.model.fit(self.data)
+                    self.is_trained = True
+                except: return "ERROR", False
+            else:
+                # Skip training to avoid learning bad patterns, but keep data in window
+                return "PAUSED LEARNING: Unstable", False
 
         try:
             prediction = self.model.predict([features])
@@ -249,8 +253,6 @@ class MultiFeatureIsolationForest:
         except:
             return "ERROR", False
 
-# --- 3. LSTM AUTOENCODER DETECTOR ---
-# (Kept for compatibility, though not used in the requested loop)
 class LSTMAutoencoderDetector:
     def __init__(self, target_name, timesteps=30, training_size=500, threshold_percentile=95.0):
         self.target_name = target_name.replace("/", "_").replace(":", "_")
@@ -340,20 +342,26 @@ class LSTMAutoencoderDetector:
             return False
         return False
 
-    def update(self, new_value):
+    def update(self, new_value, allow_learning=True): # <--- MODIFIED SIGNATURE
         if new_value <= 0: return "SKIPPED", False
         self.data.append(new_value)
         if len(self.data) > 2000: self.data = self.data[-2000:]
 
         if len(self.data) < self.training_size: 
             if not self.is_trained:
+                # Only collect data, don't train yet
                 return "LEARNING: Collecting Patterns", False
             else:
                 return "RECOVERING: Buffering Data", False
 
+        # --- GUARDED TRAINING LOGIC ---
         if not self.is_trained:
-            status, _ = self.train()
-            if status == "TRAINED": return status, False
+            # Only train if allowed (i.e., SmartDetector says system is stable)
+            if allow_learning:
+                status, _ = self.train()
+                if status == "TRAINED": return status, False
+            else:
+                return "PAUSED LEARNING: Unstable Environment", False
 
         if self.is_trained:
             recent_data = np.array(self.data[-self.timesteps:]).reshape(-1, 1)
@@ -399,103 +407,146 @@ class MonitorState:
         self.current_statuses: Dict[str, str] = {}
         self.http_status_codes: Dict[str, int] = {}
 
-# --- 5. HYBRID MONITORING LOOP (UPDATED FOR PERSISTENCE) ---
+# --- 5. HYBRID MONITORING LOOP (WITH GUARDED LEARNING) ---
 async def monitoring_loop(state: MonitorState):
     headers = {
         'User-Agent': 'Mozilla/5.0 (ServerPulse-AI/2.0; +https://serverpulse.ai)'
     }
     
-    # Track last save time (Save every 60 seconds)
     last_save_time = {} 
 
-    # Using the loop structure from your snippet
     while state.is_monitoring:
         for target in state.targets:
-            # Initialize latency for this iteration
             current_latency = 0
             start_time = time.time() 
             
-            # --- SMART PERSISTENCE CHECK ---
-            # If target is new to memory, try to load from DB
+            # --- 1. INITIALIZATION PHASE ---
             if target not in state.detectors:
                 saved_state = load_detector_state(target, "smart_detector")
-                
-                detector = SmartDetector() # Create fresh instance
+                detector = SmartDetector()
                 if saved_state and saved_state.parameters_json:
                     try:
                         data = json.loads(saved_state.parameters_json)
                         detector.load_state_dict(data)
-                        print(f"[RESTORED] Loaded SmartDetector state for {target}")
-                    except Exception as e:
-                        print(f"[WARN] Corrupt state for {target}, starting fresh. Error: {e}")
-                
+                    except Exception as e: print(f"[WARN] Corrupt smart state: {e}")
                 state.detectors[target] = detector
+
+            if target not in state.lstm_detectors:
+                saved_lstm = load_detector_state(target, "lstm_metadata")
+                lstm = LSTMAutoencoderDetector(target_name=target)
+                if saved_lstm and saved_lstm.parameters_json:
+                    try:
+                        meta = json.loads(saved_lstm.parameters_json)
+                        lstm.threshold = meta.get("threshold", 0.0)
+                        lstm.is_trained = meta.get("is_trained", False)
+                    except: pass
+                state.lstm_detectors[target] = lstm
+
+            if target not in state.ml_detectors:
+                saved_iso = load_detector_state(target, "isolation_forest")
+                iso = MultiFeatureIsolationForest()
+                if saved_iso and saved_iso.model_blob:
+                    try:
+                        iso.load_model_blob(saved_iso.model_blob)
+                        if saved_iso.parameters_json:
+                            iso.load_state_dict(json.loads(saved_iso.parameters_json))
+                    except: pass
+                state.ml_detectors[target] = iso
+
+            if target not in last_save_time:
                 last_save_time[target] = time.time()
-            
+
+            # --- 2. DATA COLLECTION & STABILITY CHECK ---
             try:
-                # Using client.head as per your snippet
                 async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                     response = await client.head(target, headers=headers)
-                    
+                
                 current_latency = (time.time() - start_time) * 1000
                 state.http_status_codes[target] = response.status_code
                 
-                # --- HTTP LOGIC FROM SNIPPET ---
+                # --- 3. STABILITY GATEKEEPER ---
+                # We run SmartDetector FIRST. If it says "ANOMALY", we block AI Learning.
+                smart_status, smart_anomaly = state.detectors[target].update(current_latency)
+                
+                # If SmartDetector sees an anomaly, we do NOT allow AI to learn from this bad data.
+                # However, AI can still DETECT the anomaly (we pass the data to update).
+                allow_ai_learning = not smart_anomaly
+
+                # Critical HTTP Errors bypass models
                 if response.status_code >= 500:
-                    # 5xx means the Server crashed. This is "DOWN".
                     state.current_statuses[target] = f"SERVER DOWN ({response.status_code})"
                     update_history(state, target, 0)
-                    # --- NEW: LOG TO DB ---
                     save_monitor_log_entry(target, response.status_code, 0, False)
                 
                 elif 400 <= response.status_code < 500:
-                    # 4xx (404, 403) means Client Error/Firewall.
-                    state.current_statuses[target] = f"ERROR ({response.status_code})"
+                    state.current_statuses[target] = f"CLIENT ERROR ({response.status_code})"
                     update_history(state, target, 0)
-                    # --- NEW: LOG TO DB ---
                     save_monitor_log_entry(target, response.status_code, 0, False)
-                    
+
                 else:
-                    # 2xx/3xx OK - Run SmartDetector
-                    status_text, is_anomaly = state.detectors[target].update(current_latency)
-                    if status_text == "TRAINING":
-                        state.current_statuses[target] = "Learning Baseline..."
-                    elif status_text == "WARNING: Slow Response":
-                        state.current_statuses[target] = "WARNING: High Latency"
-                    elif status_text == "Unstable":
-                        state.current_statuses[target] = "Unstable"
+                    # --- Run Isolation Forest ---
+                    iso_features = [current_latency, response.status_code]
+                    # Pass allow_ai_learning here
+                    iso_status, iso_anomaly = state.ml_detectors[target].update(iso_features, allow_learning=allow_ai_learning)
+
+                    # --- Run LSTM ---
+                    # Pass allow_ai_learning here
+                    lstm_status, lstm_anomaly = state.lstm_detectors[target].update(current_latency, allow_learning=allow_ai_learning)
+
+                    # --- 4. HYBRID DECISION LOGIC ---
+                    final_status = "Operational"
+                    is_critical = False
+
+                    # If AI is paused learning because of instability, report it
+                    if not allow_ai_learning:
+                        final_status = f"Stabilizing... ({smart_status})"
+                        is_critical = smart_anomaly # Inherit critical state from SmartDetector
                     else:
-                        state.current_statuses[target] = "Operational"
+                        # Normal Logic
+                        if smart_anomaly:
+                            final_status = f"WARNING: High Latency (SmartDet)"
+                            is_critical = True
+                        
+                        if lstm_anomaly:
+                            if "CRITICAL" in lstm_status:
+                                final_status = f"CRITICAL: Pattern Breakdown (AI/LSTM)"
+                                is_critical = True
+                            elif "WARNING" in lstm_status:
+                                if not is_critical:
+                                    final_status = f"WARNING: Trend Anomaly (AI/LSTM)"
+                        
+                        if iso_anomaly:
+                            if not is_critical:
+                                final_status = "WARNING: Complex Anomaly (IsoForest)"
+
+                        if "TRAINING" in smart_status or "LEARNING" in lstm_status:
+                            final_status = "Learning System Behavior..."
+                    
+                    state.current_statuses[target] = final_status
                     update_history(state, target, current_latency)
-                    # --- NEW: LOG TO DB ---
                     save_monitor_log_entry(target, response.status_code, current_latency, True)
                     
             except httpx.ConnectTimeout:
                 state.current_statuses[target] = "WARNING: Connection Timeout"
                 update_history(state, target, 0)
-                # --- NEW: LOG TO DB ---
                 save_monitor_log_entry(target, None, 0, False) 
-                
             except httpx.ConnectError:
                 state.current_statuses[target] = "CONNECTION REFUSED"
                 update_history(state, target, 0)
-                # --- NEW: LOG TO DB ---
                 save_monitor_log_entry(target, None, 0, False)
-                
             except Exception as e:
                 state.current_statuses[target] = f"ERROR: {str(e)[:20]}"
                 update_history(state, target, 0)
-                # --- NEW: LOG TO DB ---
                 save_monitor_log_entry(target, None, 0, False)
 
-            # --- ALERT INTEGRATION ---
-            current_status = state.current_statuses.get(target, "Unknown")
-            check_service_alerts(target, current_status, current_latency)
+            # --- 5. ALERTS ---
+            check_service_alerts(target, state.current_statuses.get(target, "Unknown"), current_latency)
 
-            # --- PERIODIC SAVE TO DB ---
-            # Save every 60 seconds to prevent DB hammering (approx 40 checks)
+            # --- 6. PERSISTENCE ---
             if time.time() - last_save_time.get(target, 0) > 60:
                 save_detector_state(target, state.detectors[target], "smart_detector")
+                save_detector_state(target, state.ml_detectors[target], "isolation_forest")
+                save_detector_state(target, state.lstm_detectors[target], "lstm_metadata")
                 last_save_time[target] = time.time()
 
         await asyncio.sleep(1.5) 
